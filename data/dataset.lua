@@ -324,19 +324,23 @@ end
 
 -- getByClass
 function dataset:getByClass(class)
-   local index = 0
-   if self.serial_batches == 1 then 
-     index = math.fmod(self.image_count-1, self.classListSample[class]:nElement())+1
-     self.image_count = self.image_count +1
-   else
+  local index = 0
+  if self.serial_batches == 1 then 
+    index = math.fmod(self.image_count-1, self.classListSample[class]:nElement())+1
+    self.image_count = self.image_count +1
+  else
     index = math.ceil(torch.uniform() * self.classListSample[class]:nElement())
-   end
+  end
 --   print('serial_batches: ', self.serial_batches)
 --   print('max_index:, ', self.classListSample[class]:nElement())
 --   print('index: ', index)
 --   print('image_count', 
-   local imgpath = ffi.string(torch.data(self.imagePath[self.classListSample[class][index]]))
-   return self:sampleHookTrain(imgpath),  imgpath
+  local imgpath = ffi.string(torch.data(self.imagePath[self.classListSample[class][index]]))
+  local maskpath
+  if self.custom_data then
+    maskpath = string.format("%s_mask/%s_mask.png", paths.dirname(imgpath), paths.basename(imgpath, 'png'))
+  end
+  return self:sampleHookTrain(imgpath, maskpath),  imgpath
 end
 
 -- converts a table of samples (and corresponding labels) to a clean tensor

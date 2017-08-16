@@ -1,10 +1,16 @@
 #
 *~
+*.swp
 
 *.DS_Store
 cache/
+result/
 results/
 checkpoints/
+*.log
+*.txt
+*.jpg
+*.png
 
 # luarocks build files
 *.src.rock

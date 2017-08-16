@@ -11,6 +11,7 @@
 ]]--
 
 require 'image'
+util = paths.dofile('../util/util.lua')
 paths.dofile('dataset.lua')
 -- This file contains the data-loading logic and details.
 -- It is run by each data-loader thread.
@@ -167,13 +168,18 @@ local mean,std
 -- Hooks that are used for each image that is loaded
 
 -- function to load the image, jitter it appropriately (random crops etc.)
-local trainHook = function(self, path)
+local trainHook = function(self, path, maskpath)
    collectgarbage()
    if opt.preprocess == 'regular' then
---     print('process regular')
-     local imA, imB = loadImage(path)
-     imA, imB = preprocessAandB(imA, imB)
-     imAB = torch.cat(imA, imB, 1)
+    local imA, imB  
+    if opt.custom_data then
+      imA = util.preprocess(image.load(path, 3, 'float'))
+      imB = util.preprocess(image.load(maskpath, 3, 'float'))
+    else  
+      imA, imB = loadImage(path)
+      imA, imB = preprocessAandB(imA, imB)
+    end 
+    imAB = torch.cat(imA, imB, 1)
    end
    
    if opt.preprocess == 'colorization' then 
@@ -211,12 +217,13 @@ trainLoader = dataLoader{
     sampleSize = {input_nc+output_nc, sampleSize[2], sampleSize[2]},
     split = 100,
     serial_batches = opt.serial_batches, 
-    verbose = true
+    verbose = true,
  }
 --   print('finish')
 --torch.save(trainCache, trainLoader)
 --print('saved metadata cache at', trainCache)
 trainLoader.sampleHookTrain = trainHook
+trainLoader.custom_data = opt.custom_data
 --end
 collectgarbage()
 
