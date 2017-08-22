@@ -1,10 +1,10 @@
 require 'gnuplot'
 
-local modelId = 'mri_cgan'
+local modelId = 'facade_uncgan_wgan'
 local trainlossname = string.format("checkpoints/%s/loss.t7", modelId)
 local trainloss = torch.load(trainlossname)
---local validlossname = string.format("checkpoints/%s/loss_val.t7", modelId)
---local validloss = torch.load(validlossname)
+local validlossname = string.format("checkpoints/%s/loss_val.t7", modelId)
+local validloss = torch.load(validlossname)
 
 local function plotfigureOld(file, key)
   local name = string.format("checkpoints/%s/%s_train.png", modelId, key)
@@ -40,17 +40,17 @@ local function plotfigureValid(file, key)
 end
 
 -- for model mri_cgan, mri_cgan_L1
-plotfigureOld(trainloss, 'errG')
-plotfigureOld(trainloss, 'errD')
+--plotfigureOld(trainloss, 'errG')
+--plotfigureOld(trainloss, 'errD')
 --plotfigureTrain('errL1')
 
---plotfigureTrain(trainloss, 'errG', 50)
---plotfigureTrain(trainloss, 'errD', 50)
---plotfigureTrain(trainloss, 'errContent', 50)
+plotfigureTrain(trainloss, 'errG', 50)
+plotfigureTrain(trainloss, 'errD', 50)
+plotfigureTrain(trainloss, 'errContent', 50)
 
---plotfigureValid(validloss, 'errG')
---plotfigureValid(validloss, 'errD')
---plotfigureValid(validloss, 'errContent')
+plotfigureValid(validloss, 'errG')
+plotfigureValid(validloss, 'errD')
+plotfigureValid(validloss, 'errContent')
 
 
 

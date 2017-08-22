@@ -11,19 +11,20 @@ require 'image'
 require 'models'
 require 'fast_neural_style.PerceptualCriterion'
 local percept_utils = require 'fast_neural_style.utils'
+local customModels = require 'fast_neural_style.models'
 
 opt = {
   DATA_ROOT = '',         -- path to images (should have subfolders 'train', 'val', etc)
-  name = 'facade_cgan_basic',              -- name of the experiment, should generally be passed on the command line
-  batchSize = 1,          -- # images in batch
+  name = 'facade_uncgan_wgan',              -- name of the experiment, should generally be passed on the command line
+  batchSize = 16,          -- # images in batch
   loadSize = 256,         -- scale images to this size
   fineSize = 256,         --  then crop to this size
   ngf = 64,               -- #  of gen filters in first conv layer
   ndf = 64,               -- #  of discrim filters in first conv layer
   input_nc = 3,           -- #  of input image channels
   output_nc = 3,          -- #  of output image channels
-  niter = 200,            -- #  of iter at starting learning rate
-  lr = 0.0002,            -- initial learning rate for adam
+  niter = 4000,            -- #  of iter at starting learning rate
+  lr = 0.001, -- 0.0002            -- initial learning rate for adam
   beta1 = 0.5,            -- momentum term of adam
   ntrain = math.huge,     -- #  of examples per epoch. math.huge for full dataset
   flip = 1,               -- if flip the images for data argumentation
@@ -35,27 +36,30 @@ opt = {
   phase = 'train',             -- train, val, test, etc
   preprocess = 'regular',      -- for special purpose preprocessing, e.g., for colorization, change this (selects preprocessing functions in util.lua)
   nThreads = 2,                -- # threads for loading data
-  save_epoch_freq = 50,        -- save a model every save_epoch_freq epochs (does not overwrite previously saved models)
-  save_latest_freq = 1000,    -- save the latest model every latest_freq sgd iterations (overwrites the previous latest model)
-  print_freq = 50,            -- print the debug information every print_freq iterations
+  save_epoch_freq = 100,        -- save a model every save_epoch_freq epochs (does not overwrite previously saved models)
+  save_latest_freq = 5000,    -- save the latest model every latest_freq sgd iterations (overwrites the previous latest model)
+  print_freq = 1,            -- print the debug information every print_freq iterations
   --display_freq = 100,          -- display the current results every display_freq iterations
   save_display_freq = 5000,    -- save the current display of results every save_display_freq_iterations
   continue_train=0,            -- if continue training, load the latest model: 1: true, 0: false
-  pretrain_netG = './checkpoints/mri_percept_cgan_finetune/pretrain_net_G.t7',
+  pretrain_netG = './checkpoints/mri_percept_myunet/50_net_G.t7',
   serial_batches = 0,          -- if 1, takes images in order to make batches, otherwise takes them randomly
   serial_batch_iter = 1,       -- iter into serial image list
   checkpoints_dir = './checkpoints', -- models are saved here
   cudnn = 1,                         -- set to 0 to not use cudnn
-  condition_GAN = 1,                 -- set to 0 to use unconditional discriminator
+  condition_GAN = 0,                 -- set to 0 to use unconditional discriminator
+  wGAN = 1,          -- set to 1 to use wGAN
+  clamp = 0.01,      -- only used when wGAN = 1
+  n_critic = 5,      -- only used when wGAN = 1 
   use_GAN = 1,                       -- set to 0 to turn off GAN term
   --use_L1 = 1,                        -- set to 0 to turn off L1 term
   which_model_netD = 'basic', -- selects model to use for netD
   which_model_netG = 'unet',  -- selects model to use for netG
   n_layers_D = 0,             -- only used if which_model_netD=='n_layers'
-  lambda = 100,   --100            -- weight on L1 term in objective
+  lambda = 50,   --100            -- weight on L1 term in objective
   -- opts added by me
   custom_data = false,      -- add custom logic in the dataset:getByClass
-  validate_freq = 500,       -- run validation every validate_freq interations, set -1 to turn off validation
+  validate_freq = 500,      -- run validation every validate_freq interations, set -1 to turn off validation
   content_loss = '',   -- L1|percept  
   pretrain_iters = 0,      -- train the network with only content loss for pertrain_iters iterations
   content_off_afterpertrain = 0,  -- set 1 to trun off content loss after pretrain_iters iterations
@@ -63,7 +67,12 @@ opt = {
   -- percept options
   loss_network = 'percept-models/vgg16.t7',  -- loss network for computing the perceptual loss
   content_weights = '1.0',
-  content_layers = '2'
+  content_layers = '2',
+  -- custom model options
+  arch = 'c9s1-32,d64,d128,R128,R128,R128,R128,R128,u64,u32,c9s1-3',   -- only used if which_model_netG = 'custom'
+  padding_type = 'zero',  -- reflect-start|zero
+  use_instance_normalization = 0,
+  notanh = 0,  -- set 1 to remove the last Tanh() in the generator
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
@@ -131,8 +140,10 @@ local fake_label = 0
 function defineG(input_nc, output_nc, ngf)
     local netG = nil
     if     opt.which_model_netG == "encoder_decoder" then netG = defineG_encoder_decoder(input_nc, output_nc, ngf)
-    elseif opt.which_model_netG == "unet" then netG = defineG_unet(input_nc, output_nc, ngf)
+    elseif opt.which_model_netG == "unet" then netG = defineG_unet(input_nc, output_nc, ngf, opt.use_instance_normalization==1, opt.notanh==1)
     elseif opt.which_model_netG == "unet_128" then netG = defineG_unet_128(input_nc, output_nc, ngf)
+    elseif opt.which_model_netG == "custom" then netG = customModels.build_model(opt)
+    elseif opt.which_model_netG == "custom_unet" then netG = defineG_custom_unet()
     else error("unsupported netG model")
     end
    
@@ -149,13 +160,17 @@ function defineD(input_nc, output_nc, ndf)
         input_nc_tmp = 0 -- only penalizes structure in output channels
     end
     
-    if     opt.which_model_netD == "basic" then netD = defineD_basic(input_nc_tmp, output_nc, ndf, opt.fineSize)
-    elseif opt.which_model_netD == "n_layers" then netD = defineD_n_layers(input_nc_tmp, output_nc, ndf, opt.n_layers_D, opt.fineSize)
-    elseif opt.which_model_netD == "single_output" then netD = defineD_single_output(input_nc_tmp, output_nc, ndf, opt.fineSize)
-    elseif opt.which_model_netD == "single_output_fc" then netD = defineD_single_output_fc(input_nc_tmp, output_nc, ndf, opt.fineSize)
+    if     opt.which_model_netD == "basic" then netD = defineD_basic(input_nc_tmp, output_nc, ndf, opt.fineSize, opt.use_instance_normalization == 1)
+    elseif opt.which_model_netD == "n_layers" then netD = defineD_n_layers(input_nc_tmp, output_nc, ndf, opt.n_layers_D, opt.fineSize, opt.use_instance_normalization == 1)
+    elseif opt.which_model_netD == "single_output" then netD = defineD_single_output(input_nc_tmp, output_nc, ndf, opt.fineSize, opt.use_instance_normalization == 1)
+    elseif opt.which_model_netD == "single_output_fc" then netD = defineD_single_output_fc(input_nc_tmp, output_nc, ndf, opt.fineSize, opt.use_instance_normalization == 1)
     else error("unsupported netD model")
     end
-    
+   
+    if opt.wGAN then
+      netD = netD:add(nn.Mean(1))
+    end
+ 
     netD:apply(weights_init)
     
     return netD
@@ -267,9 +282,9 @@ function createRealFake()
     fake_B = netG:forward(real_A)
     
     if opt.condition_GAN==1 then
-        fake_AB = torch.cat(real_A,fake_B,2)
+      fake_AB = torch.cat(real_A,fake_B,2)
     else
-        fake_AB = fake_B -- unconditional GAN, only penalizes structure in B
+      fake_AB = fake_B -- unconditional GAN, only penalizes structure in B
     end
 end
 
@@ -287,20 +302,37 @@ local fDx = function(x)
     	label = label:cuda()
     end
 
-    local errD_real = criterion:forward(output, label)
-    local df_do = criterion:backward(output, label)
-    netD:backward(real_AB, df_do)
+    local errD_real
+    if opt.wGAN == 1 then
+      errD_real = output:clone()
+      netD:backward(real_AB, label)
+    else
+      errD_real = criterion:forward(output, label)
+      local df_do = criterion:backward(output, label)
+      netD:backward(real_AB, df_do)
+    end
     
     -- Fake
     local output = netD:forward(fake_AB)
     label:fill(fake_label)
-    local errD_fake = criterion:forward(output, label)
-    local df_do = criterion:backward(output, label)
-    netD:backward(fake_AB, df_do)
+    local errD_fake
+    if opt.wGAN == 1 then
+      errD_fake = output:clone()
+      netD:backward(fake_AB, label)
+    else
+      errD_fake = criterion:forward(output, label)
+      local df_do = criterion:backward(output, label)
+      netD:backward(fake_AB, df_do)
+    end
     
-    errD = (errD_real + errD_fake)/2
-    
-    return errD, gradParametersD
+    if opt.wGAN == 1 then
+      errD = (errD_real - errD_fake):abs():mean()
+      parametersD:clamp(-opt.clamp, opt.clamp)
+      return errD, -gradParametersD
+    else
+      errD = (errD_real + errD_fake)/2
+      return errD, gradParametersD
+    end
 end
 
 -- create closure to evaluate f(X) and df/dX of generator
@@ -317,14 +349,20 @@ local fGx = function(x)
     end
     
     if opt.use_GAN==1 then
-       local output = netD.output -- netD:forward{input_A,input_B} was already executed in fDx, so save computation
-       local label = torch.FloatTensor(output:size()):fill(real_label) -- fake labels are real for generator cost
-       if opt.gpu>0 then 
+      local output = netD.output -- netD:forward{input_A,input_B} was already executed in fDx, so save computation
+      local label = torch.FloatTensor(output:size()):fill(real_label) -- fake labels are real for generator cost
+      if opt.gpu>0 then 
        	label = label:cuda();
-       	end
-       errG = criterion:forward(output, label)
-       local df_do = criterion:backward(output, label)
-       df_dg = netD:updateGradInput(fake_AB, df_do):narrow(2,fake_AB:size(2)-output_nc+1, output_nc)
+      end
+      if opt.wGAN then
+        errG = 0  -- errG is not meaningful in this case
+        label:fill(fake_label)
+        df_dg = netD:updateGradInput(fake_AB, label):narrow(2,fake_AB:size(2)-output_nc+1, output_nc)
+      else
+        errG = criterion:forward(output, label)
+        local df_do = criterion:backward(output, label)
+        df_dg = netD:updateGradInput(fake_AB, df_do):narrow(2,fake_AB:size(2)-output_nc+1, output_nc)
+      end
     else
         errG = 0
     end
@@ -374,16 +412,22 @@ local function validate()
 
   local errD, errG = 0, 0
   if opt.use_GAN == 1 then
-    local output = netD:forward(real_AB)
-    local label = torch.FloatTensor(output:size()):fill(real_label):type(dtype)
-    local errD_real = criterion:forward(output, label)
-    output = netD:forward(fake_AB)
-    label:fill(fake_label)
-    local errD_fake = criterion:forward(output, label)
-    errD = (errD_real + errD_fake) / 2
+    if opt.wGAN == 1 then
+      local errD_real = netD:forward(real_AB):clone()
+      local errD_fake = netD:forward(fake_AB):clone()
+      errD = (errD_real - errD_fake):abs():mean()
+    else
+      local output = netD:forward(real_AB)
+      local label = torch.FloatTensor(output:size()):fill(real_label):type(dtype)
+      local errD_real = criterion:forward(output, label)
+      output = netD:forward(fake_AB)
+      label:fill(fake_label)
+      local errD_fake = criterion:forward(output, label)
+      errD = (errD_real + errD_fake) / 2
 
-    label = torch.FloatTensor(output:size()):fill(real_label):type(dtype) -- fake labels are real for generator cost
-    errG = criterion:forward(output, label)
+      label = torch.FloatTensor(output:size()):fill(real_label):type(dtype) -- fake labels are real for generator cost
+      errG = criterion:forward(output, label)
+    end
   end
 
   local errContent = 0
@@ -450,7 +494,15 @@ for epoch = 1, opt.niter do
     end
         
         -- (1) Update D network: maximize log(D(x,y)) + log(1 - D(x,G(x)))
-        if opt.use_GAN==1 then optim.adam(fDx, parametersD, optimStateD) end
+        if opt.use_GAN==1 then 
+          if opt.wGAN == 1 then
+            for ii = 1, opt.n_critic do
+              optim.adam(fDx, parametersD, optimStateD)
+            end 
+          else
+            optim.adam(fDx, parametersD, optimStateD) 
+          end
+        end
         
         -- (2) Update G network: maximize log(D(x,G(x))) + L1(y,G(x))
         optim.adam(fGx, parametersG, optimStateG)
@@ -556,7 +608,9 @@ for epoch = 1, opt.niter do
         if counter % opt.save_latest_freq == 0 then
           print(('saving the latest model (epoch %d, iters %d)'):format(epoch, counter))
           torch.save(paths.concat(opt.checkpoints_dir, opt.name, 'latest_net_G.t7'), netG:clearState())
-          torch.save(paths.concat(opt.checkpoints_dir, opt.name, 'latest_net_D.t7'), netD:clearState())
+          if opt.use_GAN == 1 and counter > opt.pretrain_iters then
+            torch.save(paths.concat(opt.checkpoints_dir, opt.name, 'latest_net_D.t7'), netD:clearState())
+          end
           torch.save(paths.concat(opt.checkpoints_dir, opt.name, 'loss.t7'), loss_history)
           local checkpoint_opt = {epoch=epoch, iter=counter, opt=opt, optimStateD=optimStateD, optimStateG=optimStateG}
           torch.save(paths.concat(opt.checkpoints_dir, opt.name, 'latest_opt.t7'), checkpoint_opt) 
@@ -597,8 +651,10 @@ for epoch = 1, opt.niter do
     parametersG, gradParametersG = nil, nil
     
     if epoch % opt.save_epoch_freq == 0 then
-        torch.save(paths.concat(opt.checkpoints_dir, opt.name,  epoch .. '_net_G.t7'), netG:clearState())
+      torch.save(paths.concat(opt.checkpoints_dir, opt.name,  epoch .. '_net_G.t7'), netG:clearState())
+      if opt.use_GAN == 1 and counter > opt.pretrain_iters then
         torch.save(paths.concat(opt.checkpoints_dir, opt.name, epoch .. '_net_D.t7'), netD:clearState())
+      end
     end
     
     print(('End of epoch %d / %d \t Time Taken: %.3f'):format(

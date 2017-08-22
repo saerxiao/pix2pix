@@ -6,6 +6,7 @@
 require 'image'
 require 'nn'
 require 'nngraph'
+require 'fast_neural_style.InstanceNormalization'
 util = paths.dofile('util/util.lua')
 torch.setdefaulttensortype('torch.FloatTensor')
 
@@ -31,7 +32,7 @@ opt = {
     cudnn = 1,                -- set to 0 to not use cudnn (untested)
     checkpoints_dir = './checkpoints', -- loads models from here
     results_dir='./results/',          -- saves results here
-    which_epoch = 'latest',            -- which epoch to test? set to 'latest' to use latest cached model
+    which_epoch = '200',            -- which epoch to test? set to 'latest' to use latest cached model
 }
 
 

@@ -3,6 +3,7 @@ require 'lfs'
 require 'image'
 require 'nn'
 require 'nngraph'
+require 'fast_neural_style.InstanceNormalization'
 util = paths.dofile('util/util.lua')
 torch.setdefaulttensortype('torch.FloatTensor')
 
@@ -10,7 +11,7 @@ local opt = {
   backend = 'cuda',
   gpu = 1,
   cudnn = 1,
-  modelId = 'mri_cgan',
+  modelId = 'mri_uncgan',
   epochIter = 'epoch200',
   checkpointFile = '200_net_G.t7',
   plotSlice = false,
@@ -35,7 +36,7 @@ local function createOutputdir()
   if opt.selectVolId then
     outputdir = outputdir .. '-' .. opt.selectVolId
   end
-  paths.mkdir(outputdir)
+  paths.mkdir(outputdir .. "/images")
   slicedir = string.format("%s/slice", outputdir)
   if opt.plotSlice then paths.mkdir(slicedir) end
   return outputdir, slicedir
@@ -100,9 +101,15 @@ local function transform(slices, prefix, sliceprefix)
   local mN, mH, mW = output_gen:max(2):squeeze(), output_gen:max(3):squeeze(), output_gen:max(4):squeeze()
   gtrueth = gtrueth:transpose(1,2)
   local mN_t, mH_t, mW_t = gtrueth:max(2):squeeze(), gtrueth:max(3):squeeze(), gtrueth:max(4):squeeze()
-  image.save(string.format("%s_N.png", prefix), torch.cat(mN, mN_t, 3))
-  image.save(string.format("%s_H.png", prefix), torch.cat(mH, mH_t, 3))
-  image.save(string.format("%s_W.png", prefix), torch.cat(mW, mW_t, 3))
+  image.save(string.format("%s_N.png", prefix), mN_t)
+  image.save(string.format("%s_N_gen.png", prefix), mN)
+  image.save(string.format("%s_H.png", prefix), mH_t)
+  image.save(string.format("%s_H_gen.png", prefix), mH)
+  image.save(string.format("%s_W.png", prefix), mW_t)
+  image.save(string.format("%s_W_gen.png", prefix), mW)
+  --image.save(string.format("%s_N.png", prefix), torch.cat(mN, mN_t, 3))
+  --image.save(string.format("%s_H.png", prefix), torch.cat(mH, mH_t, 3))
+  --image.save(string.format("%s_W.png", prefix), torch.cat(mW, mW_t, 3))
 end
 
 function plotMIP(modelId, epoch, checkpointFile, selectVolId)
@@ -116,13 +123,13 @@ function plotMIP(modelId, epoch, checkpointFile, selectVolId)
   local volumns = getVolumnMap()
   local N = 1
   local id = 0
-  local fileName = "trainIdList.txt"
-  local file = io.open(fileName, 'a')
+  local fileName = string.format("%s/IdList.txt", outputdir)
+  local file = io.open(fileName, 'w')
   for volId, slices in pairs(volumns) do
     file:write(string.format("%s\n", volId))
     if not selectVolId or volId == selectVolId then 
-      local prefix = string.format("%s/%s", outputdir, volId)
-      local sliceprefix = string.format("%s/%s", slicedir, volId)
+      local prefix = string.format("%s/images/%s", outputdir, volId)
+      local sliceprefix = string.format("%s/images/%s", slicedir, volId)
       transform(slices, prefix, sliceprefix)
       id = id + 1
       print(id)
@@ -130,6 +137,43 @@ function plotMIP(modelId, epoch, checkpointFile, selectVolId)
     --if id == N then break end
   end
   file:close()
+  
+end
+
+local function makeWebpage(volIds, axis)
+  print(outputdir)
+  io.output(paths.concat(outputdir, string.format('mip_%s.html', axis)))
+  io.write('<table style="text-align:center;">')
+  io.write('<tr><td>Volumn Id #</td><td>Ground Truth</td><td>Output</td></tr>')
+  for i=1, #volIds do
+    io.write('<tr>')
+    io.write('<td>' .. volIds[i] .. '</td>')
+    io.write(string.format('<td><img src="./images/%s_%s.png"/></td>', volIds[i], axis))
+    io.write(string.format('<td><img src="./images/%s_%s_gen.png"/></td>', volIds[i], axis))
+    io.write('</tr>')
+  end  
+  io.write('</table>')
+end
+
+local function getVolIds(volIdfile)
+  print(volIdfile)
+  local volIds = {}
+  local file = io.open(volIdfile)
+  if file then
+    for line in file:lines() do
+      table.insert(volIds, line)
+    end
+  end
+  return volIds
+end
+
+local function makeWebpages()
+  if not outputdir then createOutputdir() end
+  local volIds = getVolIds(string.format("%s/IdList.txt", outputdir))
+  makeWebpage(volIds, 'N')
+  makeWebpage(volIds, 'H')
+  makeWebpage(volIds, 'W')
 end
 
 plotMIP()
+makeWebpages()
